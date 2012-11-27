@@ -1,260 +1,25 @@
 #!/bin/bash
 #
-# pbrisbin 2010
-#
-# aurget: A simple pacman-like interface to the AUR
-#
-# http://pbrisbin.com/posts/aurget/
+# pbrisbin 2012
 #
 ###
+info()  { echo -e "${colorB}:: ${colorW}$*${nocolor}";  }
+warn()  { echo -e "${colorY}warning: ${colorW}$*${nocolor}" >&2; }
+error() { echo -e "${colorR}error: ${colorW}$*${nocolor}"   >&2; }
 
-# script info {{{
-SCRIPT_NAME='Aurget'
-SCRIPT_DESCRIPTION='A simple pacman-like interface to the AUR'
-SCRIPT_AUTHOR='Patrick Brisbin <pbrisbin@gmail.com>'
-SCRIPT_VERSION='3.4.2'
-SCRIPT_DATE='11/8/2012'
-
-# }}}
-
-# script utilities {{{
-display() { echo -e "${colorB}:: ${colorW}$*${nocolor}"; }
-
-warn() { echo -e "${colorY}warning: ${nocolor}$*" >&2; }
-
-errorout() {
-  echo -e "${colorR}error: ${nocolor}$*" >&2
-
-  [[ -d "$tmpdir" ]] && rm -r "$tmpdir"
-
-  exit 1
-}
-
-dieonlock() {
-  cat << EOF
-
-   Lock file found at $lock_file.
-
-   Another aurget process is currently running. Please wait until it has
-   finished.
-
-EOF
-  exit 1
-}
-
-builderror() {
-  local pkg="$1" src="$2" dep="$3" msg
-
-  msg="notice: $pkg failed while building, remove source files ($src)"
-
-  # $src must be nonzero so we don't attempt to rm -rf /*
-  prompt "$msg" && [[ -n "$src" ]] && rm -rf "$src/"*
-
-  # if it's a dep we need to errorout entirely
-  if (($dep == 1)); then
-    errorout "dependency package $pkg failed to build. unable to continue."
-  # otherwise, warn but continue
-  else
-    warn "package $pkg failed to build and won't be installed."
-  fi
-}
-
-# prompt and return based on choice
 prompt() {
-  local a
+  local ans
 
-  echo -en "$*? [Y/n] "
+  read -p "$*? [Y/n] " ans
 
-  if $noconfirm; then
-    echo 'Y'
-    return 0
-  else
-    read a
-  fi
-
-  case "${a:-y}" in
-    y|Y) return 0     ;;
-    q|Q) clean_exit 1 ;;
-    *)   return 1     ;;
+  case "${ans:-y}" in
+    y|Y) return 0 ;;
+    *)   return 1 ;;
   esac
 }
 
-# uses eval to process --option=value type arguments
-runtime_flag() { eval ${1/--/}; }
-
-# check for development
-is_devel() { echo "$1" | grep -q -- "$development_regex"; }
-
-# clear our temp dir
-clear_temp() {
-  [[ -d "$tmpdir" ]] && rm -r "$tmpdir"
-  mkdir -p "$tmpdir"
-}
-
-# }}}
-
-# message {{{
-message() {
-  cat << EOF
-usage: aurget [ -v | -h | -S* [ --options ] [ -- ] <arguments> ]
-  options:
-
-        -S  <package>   process <package> using your default sync_mode
-
-        -Sd <package>   download <package>
-        -Sb <package>   download and build <package>
-        -Sy <package>   download, build, and install <package>
-
-        -Su             process available upgrades using your default sync_mode
-
-        -Sdu            download available upgrades
-        -Sbu            download and build available upgrades
-        -Syu            download, build, and install available upgrades
-
-        -Ss  <term>     search aur for <term>
-        -Ssq <term>     search aur for <term>, print only package names
-        -Sp  <package>  print the PKGBUILD for <package>
-        -Si  <package>  print extended info for <package>
-
-        --rebuild       always rebuild (ignore your cache)
-
-        --devel         only affects -Su, add all development packages
-
-        --deps          resolve dependencies
-        --nodeps        don't resolve dependencies
-
-        --edit          prompt to edit all pkgbuilds
-        --noedit        don't prompt to edit any pkgbuilds
-
-        --discard       discard source files after building
-        --nodiscard     don't discard source files after building
-
-        --nocolor       disable colorized output
-        --noconfirm     auto-answer y to all prompts
-        
-        --move          move built package to pacman cache
-
-        --ignore '<package> <package> <...>'
-                        add additional packages to be ignored
-
-        --mopt '-opt -opt ...'
-                        add additional options to the build command
-
-        --popt '-opt -opt ...'
-                        add additional options to the install command
-
-        -v, --version   display version info
-        -h, --help      display this
-
-        --option=value  set config <option> as <value> for this run only
-
-EOF
-
-  clean_exit 1
-}
-
-# }}}
-
-# version_info {{{
-version_info() {
-  cat << EOF
-
-  $SCRIPT_NAME: $SCRIPT_DESCRIPTION
-
-  author:      $SCRIPT_AUTHOR
-  version:     $SCRIPT_VERSION
-  last update: $SCRIPT_DATE
-
-EOF
-
-  clean_exit
-}
-
-# }}}
-
-# prompt_to_edit {{{
-prompt_to_edit() {
-  local pkgbuild reason
-
-  pkgbuild="$1"; shift
-  reason="${*:-sourcing for deps}"
-
-  [[ ! -f "$pkgbuild" ]] && errorout "$Name: no PKGBUILD found"
-
-  # default is to prompt
-  case "${edit_pkgbuilds:-prompt}" in
-    never)  return 0 ;;
-    prompt) prompt "Edit PKGBUILD before $reason" || return 0 ;;
-  esac
-
-  $editor "$pkgbuild" || errorout 'problem editing PKGBUILD'
-  prompt "Continue $reason"
-}
-
-# }}}
-
-# source_pkgbuild {{{
-source_pkgbuild() {
-  local pkgbuild="$1"
-
-  [[ ! -f "$pkgbuild" ]] && errorout 'pkgbuild not found'
-
-  # source pkgbuild variables
-  source <(awk '/^build.*(.*)|^function.*build.*(.*)/{exit};1' "$pkgbuild")
-
-  # this should always be defined by makepkg.conf. apparently it can
-  # also be overridden in PKGBUILDs. only at this point will we default
-  # it if not set.
-  PKGEXT="${PKGEXT:-.pkg.tar.gz}"
-}
-
-# }}}
-
-# try_discard {{{
-try_discard() {
-  # we never discard sources
-  $discard_sources || return
-
-  # we keep devels and this is a devel package
-  $dont_discard_devels && is_devel ${1##*/} && return
-
-  # use find -delete incase the built package is still in the directory
-  #display "Discarding sources..."
-  #find "$1" -depth ! -name "${1##*/}*$PKGEXT" -delete 2>/dev/null
-
-  # turns out, the built package is _always_ in the directory
-  display 'Discarding sources...'
-  rm -rf "$1"
-}
-
-# }}}
-
-# print_pkgbuild {{{
-print_pkgbuild() {
-  local multiple=false ret=0 url
-
-  # no args returns 1
-  ((${#args[@]} == 0)) && clean_exit 1
-
-  # more than one means print names and whitespace
-  ((${#args[@]} > 1)) && multiple=true
-
-  for name in "${args[@]}"; do
-    $multiple && display "$name/PKGBUILD ==>"
-
-    url="$aur_pkgs/$(url_encode "${name:0:2}/$name")/PKGBUILD"
-    curl -fsS "$url" 2>/dev/null || ret=1
-
-    $multiple && echo
-  done
-
-  # finally, exit
-  clean_exit $ret
-}
-
-# }}}
-
-# url_encode {{{
+# $1: string to encode
+# echos url-encoded version
 url_encode() {
   local string="$1" awkscript
 
@@ -265,13 +30,121 @@ url_encode() {
                                 { printf("%%%s", $1)      } # take hex value of everything else
   '
 
-  # 6/19/2010 + thanks to Irm for this bit of magic
+  # thanks to Irm for this bit of magic
   hexdump -v -e '1/1 "%02x\t"' -e '1/1 "%_c\n"' <<< "$string" | LANG=C awk "$awkscript"
 }
 
-# }}}
+# $1: string
+# $2: regex to match against it, OR
+# $1: -F flag
+# $2: string
+# $3: non-regex to match against it
+# returns 0 if matched
+matches() {
+  if [[ "$1" = '-F' ]]; then
+    echo "$2" | grep -Fq -- "$3"
+  else
+    echo "$1" | grep -q -- "$2"
+  fi
+}
 
-# search_aur {{{
+# $1: a json string
+# $2: the single key you want the value for
+# echos the value for that key
+json_key() {
+  local json="$1" key="$2"
+
+  echo "$1" | sed -e '/.*"'"$2"'":"\([^"]*\)".*/!d; s//\1/g'
+}
+
+# $1: path to PKGBUILD
+# $*: optional, reason for requiring edit
+# returns 0 if OK to proceed
+edit_pkgbuild() {
+  local pkgbuild="$1"; shift
+  local reason="${*:-sourcing for deps}"
+
+  case "${edit_pkgbuilds:-prompt}" in
+    never)  return 0 ;;
+    prompt) prompt "Edit PKGBUILD before $reason" || return 0 ;;
+  esac
+
+  $EDITOR "$pkgbuild" || errorout 'problem editing PKGBUILD'
+  prompt "Continue $reason"
+}
+
+# $1: name of package as downloaded
+# returns 0 on successful source
+# returns 1 on unavailable package
+source_for_deps() {
+  local pkgbuild="$tmpdir/${1}_PKGBUILD"
+  local pkgbuild_url="$aur/packages/$(url_encode "${1:0:2}/$1")/PKGBUILD"
+
+  if [[ -f "$pkgbuild" ]]; then
+    # we've already seen this package, just return
+    return 0
+  fi
+
+  if ! curl -f -s -o "$pkgbuild" "$pkgbuild_url"; then
+    # not available in the AUR, assume it's available in the normal
+    # repos for now. this will be checked later and the appropriate
+    # error thrown.
+    touch "$pkgbuild"
+    return 1
+  fi
+
+  if prompt_to_edit "$pkgbuild" "sourcing $1 for dependencies"
+    source "$pkgbuild"
+    return 0
+  fi
+
+  return 1
+}
+
+# $1: url to taurball
+# returns exit code from curl
+download_or_extract() {
+  local url="$1"
+
+  if [[ "$sync_mode" = 'download' ]]; then
+    curl -f -# -o "$target" "$(basename $url)"
+  else
+    curl -f -# "$url" | tar xvzf
+  fi
+}
+
+# $1: name of package as downloaded
+# returns exit code from makepkg
+build_or_install() {
+  local name="$1"
+
+  pushd "$name" &>/dev/null
+
+  if [[ -f "/etc/customizepkg.d/$name" ]]; then
+    display 'Calling customizepkg...'
+    customizepkg --modify || warn 'customizepkg had a problem'
+  fi
+
+  case "${sync_mode:-build}"
+    'build')   makepkg $makepkg_options    ;;
+    'install') makepkg $makepkg_options -i ;;
+  esac
+
+  popd &>/dev/null
+}
+
+# echos a list of package names
+available_upgrades() {
+  while read -r name vers; do
+    versN="$(curl -f -s "${aur_info}$(url_encode "$name")" | sed -e '/.*"Version":"\([^"]*\)".*/!d; s//\1/g')"
+    [[ -n "$versN" ]] && [[  $(vercmp "$vers" -lt "$versN") ]] && echo "$name"
+  done < <(pacman -Qm)
+}
+
+
+
+# UNTESTED {{{
+
 search_aur() {
   # just print pkgbuild?
   [[ "$search_mode" = 'print' ]] && print_pkgbuild "${args[@]}"
@@ -328,182 +201,6 @@ search_aur() {
     esac
   done < <(sort <<< "$results")
 }
-
-# }}}
-
-# upgrade {{{
-upgrade() {
-  args=()
-
-  display 'Starting AUR upgrade...'
-  while read -r name vers; do
-    if is_devel $name; then
-      $devels && args+=("$name")
-    else
-      # available version
-      versN="$(curl -fsS "${aur_info}$(url_encode "$name")" | sed -e '/.*"Version":"\([^"]*\)".*/!d; s//\1/g')"
-      [[ -z "$versN" ]] && continue
-
-      # check against ignores
-      if echo " $ignore_packages " | grep -Fq -- " $name "; then
-        warn "$name: ignoring package upgrade ($vers => $versN)"
-        continue
-      fi
-
-      # use vercmp
-      check=$(vercmp "$vers" "$versN")
-      [[ $check -gt 0 ]] && warn "$name: local ($vers) is newer than aur ($versN)"
-      [[ $check -lt 0 ]] && args+=("$name")
-    fi
-  done < <(pacman -Qm)
-
-  ((${#args[@]} > 0)) && setup_targets || echo ' there is nothing to do'
-}
-
-# }}}
-
-# find_pkg {{{
-find_pkg() {
-  local name="$1" version="$2"
-
-  # try full path
-  pkg="$package_directory/$name-$version-${CARCH}$PKGEXT"
-
-  if [[ ! -f "$pkg" ]]; then
-    # try any packages
-    pkg="$package_directory/$name-$version-any$PKGEXT"
-  fi
-
-  if [[ ! -f "$pkg" ]]; then
-    # no result
-    pkg=''
-  fi
-
-  echo "$pkg"
-}
-
-# }}}
-
-# download_tarball {{{
-download_tarball() {
-  local name="$1" url="$2" target
-
-  display 'Retrieving source tarball from AUR...'
-  target="$build_directory/$name.tar.gz"
-  url="${aur}$(url_encode "${url//\\\///}")"
-  curl -f#o "$target" "$url" || errorout 'failed to retrieve aur sources'
-
-  # JSON often reports a url, it'll download but won't be a tarball
-  if ! grep -Fq 'gzip' <(file "$target"); then
-    warn "$name: not a valid tarball, trying alternate url..."
-    curl -f#o "$target" "$aur_pkgs/$(url_encode "${name:0:2}/$name/$name").tar.gz" || errorout 'failed to retrieve aur sources'
-  fi
-
-  # stop here if that's how we roll
-  [[ "$sync_mode" = 'download' ]] && clean_exit
-
-  # extract
-  display 'Extracting source tarball...'
-  (cd "$build_directory" && tar xvzf "$target" &>/dev/null) || errorout "$build_directory/$name.tar.gz: failed unpacking the tarball"
-
-  # remove the tarball post extract
-  rm "$target"
-
-  # specify sub-sourcedir
-  _srcdir="$build_directory/$name"
-}
-
-# }}}
-
-# build_package {{{
-build_package() {
-  local dep="$1" pkgbuild
-
-  display 'Building package...'
-  pushd "$_srcdir" &>/dev/null || errorout 'failed to change directory'
-
-  if [[ -f "/etc/customizepkg.d/$Name" ]]; then
-    display 'Calling customizepkg...'
-    customizepkg --modify || warn 'customizepkg had a problem'
-  fi
-
-  if ! prompt_to_edit 'PKGBUILD' "building $Name"; then
-    popd &>/dev/null
-    try_discard "$_srcdir"
-    continue
-  fi
-
-  # if we fail building, errorout on dep or just return 1 on
-  # non-dep
-  if ! PKGDEST="$package_directory" $makepkg $mopts; then
-    builderror "$Name" "$_srcdir" "$dep"
-    return 1
-  fi
-
-  popd &>/dev/null
-
-  # this may or may not discard things
-  try_discard "$_srcdir"
-
-  # stop here if that's how we roll
-  [[ "$sync_mode" = 'build' ]] && clean_exit
-
-  # look for package and any package by name
-  pkg="$(find_pkg "$Name" "$Version")"
-
-  # last resort
-  if [[ -z "$pkg" ]]; then
-    # don't build two dev packages of the same name within the same
-    # minute; this is the only way to find git/svn/etc packages' exact
-    # filenames
-    pkg="$(find "$package_directory" -ctime -1 -name "$Name-*$PKGEXT" -print -quit)"
-  fi
-
-  return 0
-}
-
-# }}}
-
-# install_package {{{
-install_package() {
-  local pkg="$1" dep="$2"
-
-  display 'Installing package...'
-
-  if [[ -f "$pkg" ]]; then
-    if (($dep == 1)); then
-      $pacman --asdep $popts "$pkg" || errorout 'failed installing the package'
-    else
-      $pacman $popts "$pkg" || errorout 'failed installing the package'
-    fi
-    if ($move_pkg); then
-      display "Moving package..."
-      sudo mv "$pkg" /var/cache/pacman/pkg || errorout 'cannot move package to cache dir'
-    fi
-  else
-    errorout "$pkg: package not found"
-  fi
-}
-
-# }}}
-
-# source_for_deps {{{
-source_for_deps() {
-  local pkgbuild="$tmpdir/${1}_PKGBUILD"
-
-  # we've already checked this
-  [[ -f "$pkgbuild" ]] && continue
-
-  # if this errors, we know it's not aur-available so return 1
-  if ! curl -fso "$pkgbuild" "$aur/packages/$(url_encode "${1:0:2}/$1")/PKGBUILD"; then
-    touch "$pkgbuild"
-    return 1
-  fi
-
-  prompt_to_edit "$pkgbuild" "sourcing $1 for dependencies" && source_pkgbuild "$pkgbuild" || continue
-}
-
-# }}}
 
 # dep_check {{{
 dep_check() {
@@ -660,256 +357,7 @@ process_targets() {
 
 # }}}
 
-# set_defaults {{{
-set_defaults() {
-  # just true/false and non-config options
-  discard_sources=true
-  dont_discard_devels=true
-  resolve_dependencies=false
-  remove_makedepends=false
-  move_pkg=false
-  devels=false
-  noconfirm=false
-  rebuild=false
-  asroot=false
-  search_mode='search'
-
-  # default to no color
-  nocolor=''
-  colorW=''
-  colorC=''
-  colorB=''
-  colorR=''
-  colorG=''
-  colorY=''
-  colorM=''
-}
-
 # }}}
-
-# source_config {{{
-source_config() {
-  local config _sourced=false
-
-  # global config file is always sourced
-  config='/etc/aurgetrc'
-  if [[ -r "$config" ]]; then
-    . "$config" || errorout "$config: invalid configuration"
-    _sourced=true
-  fi
-
-  # try xdg directory first
-  config="${XDG_CONFIG_HOME:-$HOME/.config}/aurgetrc"
-  if [[ -r "$config" ]]; then
-    . "$config" || errorout "$config: invalid configuration"
-    _sourced=true
-  else
-    # use home dot-file
-    config="$HOME/.aurgetrc"
-    if [[ -r "$config" ]]; then
-      . "$config" || errorout "$config: invalid configuration"
-      _sourced=true
-    fi
-  fi
-
-  if ! $_sourced; then
-    warn 'no config found, this could get weird...'
-  fi
-}
-
-# }}}
-
-# source_makepkg {{{
-source_makepkg() {
-  local IFS=':' conf confs _PKGDEST
-
-  # todo: preserve a PKGDEST environment variable?
-
-  # source these in order
-  confs="/etc/makepkg.conf:$HOME/.makepkg.conf"
-
-  for conf in $confs; do
-    [[ -r "$conf" ]] && . "$conf"
-  done
-
-  # set package_directory
-  package_directory="${package_directory:-$PKGDEST}"
-  package_directory="${package_directory:-$PWD}"
-  [[ -d "$package_directory" ]] || mkdir -p "$package_directory"
-
-  # set build_directory
-  # don't use SRCDEST, do check deprecated source_directory
-  #build_directory="${source_directory:-$SRCDEST}"
-  build_directory="${build_directory:-$source_directory}"
-  build_directory="${build_directory:-$PWD}"
-  [[ -d "$build_directory" ]] || mkdir -p "$build_directory"
-}
-
-# }}}
-
-# parse_options {{{
-parse_options() {
-  local _opmode='' donocolor=false
-
-  # global var, used by main
-  opmode=''
-
-  while [[ -n "$1" ]]; do
-    [[ -n "$opmode" ]] && _opmode="$opmode"
-
-    case "$1" in
-      -h|--help)     message                                ;;
-      -v|--version)  version_info                           ;;
-      --)            break                                  ;;
-      -S)            opmode='install'                       ;;
-      -Sy)           opmode='install'; sync_mode='install'  ;;
-      -Sb)           opmode='install'; sync_mode='build'    ;;
-      -Sd)           opmode='install'; sync_mode='download' ;;
-      -Su)           opmode='upgrade'                       ;;
-      -Syu|-Suy)     opmode='upgrade'; sync_mode='install'  ;;
-      -Sbu|-Sub)     opmode='upgrade'; sync_mode='build'    ;;
-      -Sdu|-Sud)     opmode='upgrade'; sync_mode='download' ;;
-      -Ss)           opmode='search' ; search_mode='search' ;;
-      -Ssq|-Sqs)     opmode='search' ; search_mode='quiet'  ;;
-      -Si|-Ssi|-Sis) opmode='search' ; search_mode='info'   ;;
-      -Sp|-Ssp|-Sps) opmode='search' ; search_mode='print'  ;;
-      --ignore)      shift; ignore_packages+=" $1"          ;;
-      --mopt)        shift; mopts+=" $1"                    ;;
-      --popt)        shift; popts+=" $1"                    ;;
-      --nocolor)     donocolor=true                         ;;
-      --noconfirm)   noconfirm=true                         ;;
-      --rebuild)     rebuild=true                           ;;
-      --asroot)      asroot=true                            ;;
-      --devel)       devels=true                            ;;
-      --deps)        resolve_dependencies=true              ;;
-      --nodeps)      resolve_dependencies=false             ;;
-      --edit)        edit_pkgbuilds='always'                ;;
-      --noedit)      edit_pkgbuilds='never'                 ;;
-      --discard)     discard_sources=true                   ;;
-      --nodiscard)   discard_sources=false                  ;;
-      --move)        move_pkg=true                          ;;
-      --*=*)         runtime_flag "$1"                      ;;
-      -*)            message                                ;;
-      *)             args+=("$1")                           ;;
-    esac
-    shift
-
-    # show help if multiple -S* commands are passed
-    [[ -n "$_opmode" ]] && [[ "$_opmode" != "$opmode" ]] && message
-  done
-
-  # grab possible args after --
-  [[ $* ]] && args+=("$@")
-
-  # verify enums
-  [[ "$edit_pkgbuilds" =~ ^(always|never|prompt)$   ]]   || edit_pkgbuilds='prompt'
-  [[ "$sync_mode"      =~ ^(download|build|install)$  ]] || errorout 'invalid sync mode specified'
-  [[ "$search_mode"    =~ ^(search|info|quiet|print)$ ]] || errorout 'invalid search mode specified'
-
-  # no dep checking unless installing
-  [[ "$sync_mode" != 'install' ]] && resolve_dependencies=false
-
-  # (re)set user binaries
-  pacman="${pacman_command:-sudo pacman -U}"
-  makepkg="${makepkg_command:-makepkg --noconfirm}"
-  editor="${pkgbuild_editor:-$EDITOR}"
-  editor="${editor:-vi}" # a failsafe
-
-  # (re)set dev regex, it can't be blank
-  development_regex=${development_regex:-.*-git$\|.*-hg$\|.*-svn$\|.*-darcs$\|.*-cvs$\|.*-bzr$}
-
-  # prevent root unless desired
-  if [[ $(id -u) == 0 ]]; then
-    $asroot || errorout 'You must pass --asroot to allow running aurget as root (not recommended).'
-
-    # fixes for root
-    pacman="${pacman/sudo /}"
-    mopts+=' --asroot'
-  fi
-
-  if $noconfirm; then
-    # change some things to go along with --noconfirm
-    grep -Fqw -- '--noconfirm' <<< "$popts" || popts+=' --noconfirm'
-    grep -Fqw -- '--noconfirm' <<< "$mopts" || mopts+=' --noconfirm'
-    edit_pkgbuilds='never'
-  fi
-
-  # if resolving deps, tell makepkg so
-  if $resolve_dependencies; then
-    grep -Fqw -- '--syncdeps' <<< "$mopts" || mopts+=' --syncdeps'
-  fi
-
-  # thanks falconindy
-  if $donocolor || [[ ! -t 1 ]]; then
-    # disable pacman color
-    pacman="${pacman/pacman-color/pacman}"
-
-    # disable makepkg color
-    grep -Fqw -- '--nocolor' <<< "$mopts" || mopts+=' --nocolor'
-
-    # disable aurget color
-    nocolor=''
-    colorW=''
-    colorC=''
-    colorB=''
-    colorR=''
-    colorG=''
-    colorY=''
-    colorM=''
-  fi
-}
-
-# }}}
-
-# main {{{
-main() {
-  case "$opmode" in
-    upgrade) upgrade       ;;
-    install) setup_targets ;;
-    search)  search_aur    ;;
-    *)       message       ;;
-  esac
-}
-
-# }}}
-
-# clean_exit {{{
-clean_exit() {
-  [[ -d "$tmpdir" ]] && rm -r "$tmpdir"
-
-  exit ${1:-0}
-}
-
-# }}}
-
-# boot_strap {{{
-boot_strap() {
-  [[ "$1" != 'bootstrap' ]] && return
-
-  cat << EOF
-
-  Boot-strapping aurget...
-
-  Once built, please use pacman to install the package in this
-  directory.
-
-EOF
-
-  clear_temp
-  set_defaults
-
-  args=('aurget')
-  sync_mode='build'
-  makepkg='makepkg'
-  build_directory="$tmpdir/bootstrap"
-
-  source_makepkg
-  setup_targets
-}
-# }}}
-
-# clean up if we catch signals
-trap 'clean_exit 1' TERM HUP QUIT INT
 
 aur='https://aur.archlinux.org'
 aur_srch="$aur/rpc.php?type=search&arg="
@@ -917,21 +365,3 @@ aur_info="$aur/rpc.php?type=info&arg="
 aur_pkgs="$aur/packages"
 
 tmpdir="${TMPDIR:-/tmp}/aurget"
-lock_file="$tmpdir/aurget.lock"
-
-boot_strap "$1"
-
-clear_temp
-
-(
-  flock -n 9 || dieonlock
-  set_defaults
-  source_config
-  source_makepkg
-  parse_options "$@"
-  main
-) 9>"$lock_file"
-
-clean_exit
-
-# vim:foldmethod=marker foldmarker={{{,}}}
