@@ -93,7 +93,7 @@ source_for_deps() {
     return 1
   fi
 
-  if prompt_to_edit "$pkgbuild" "sourcing $1 for dependencies"
+  if prompt_to_edit "$pkgbuild" "sourcing $1 for dependencies"; then
     source "$pkgbuild"
     return 0
   fi
@@ -125,7 +125,7 @@ build_or_install() {
     customizepkg --modify || warn 'customizepkg had a problem'
   fi
 
-  case "${sync_mode:-build}"
+  case "${sync_mode:-build}" in
     'build')   makepkg $makepkg_options    ;;
     'install') makepkg $makepkg_options -i ;;
   esac
@@ -133,231 +133,228 @@ build_or_install() {
   popd &>/dev/null
 }
 
+
 # echos a list of package names
-available_upgrades() {
-  while read -r name vers; do
-    versN="$(curl -f -s "${aur_info}$(url_encode "$name")" | sed -e '/.*"Version":"\([^"]*\)".*/!d; s//\1/g')"
-    [[ -n "$versN" ]] && [[  $(vercmp "$vers" -lt "$versN") ]] && echo "$name"
-  done < <(pacman -Qm)
-}
+#available_upgrades() {
+  #while read -r name vers; do
+    #versN="$(curl -f -s "${aur_info}$(url_encode "$name")" | sed -e '/.*"Version":"\([^"]*\)".*/!d; s//\1/g')"
+    #[[ -n "$versN" ]] && [[ $(vercmp "$vers" -lt "$versN") ]] && echo "$name"
+  #done < <(pacman -Qm)
+#}
 
+# {{{
+#search_aur() {
+  ## just print pkgbuild?
+  #[[ "$search_mode" = 'print' ]] && print_pkgbuild "${args[@]}"
 
+  ## continue with other searches
+  #local awkscript results term Name Version Description URL URLPath OutOfDate
 
-# UNTESTED {{{
+  #term="${args[*]}"
 
-search_aur() {
-  # just print pkgbuild?
-  [[ "$search_mode" = 'print' ]] && print_pkgbuild "${args[@]}"
+  #awkscript='
+  #function unstring(str) {
+    #sub(/[^:]+:/, "", str)
+    #gsub(/\\\"/, "\"", str)
+    #gsub(/"$/, "", str)
+    #return substr(str, 2, length(str))
+  #}
 
-  # continue with other searches
-  local awkscript results term Name Version Description URL URLPath OutOfDate
+  #/Name":/        { printf "%s",    unstring($0) }
+  #/Version":/     { printf "|%s",   unstring($0) }
+  #/Description":/ { printf "|%s",   unstring($0) }
+  #/URL":/         { printf "|%s",   unstring($0) }
+  #/OutOfDate":/   { printf "|%s",   unstring($0) }
+  #/URLPath":/     { printf "|%s\n", unstring($0) }
+  #'
 
-  term="${args[*]}"
+  ## parse JSON data
+  #results="$(curl -fsS "${aur_srch}$(url_encode "$term")" | awk -F '[^\\\\]"' -v RS='{"|,"|"}' "$awkscript")"
 
-  awkscript='
-  function unstring(str) {
-    sub(/[^:]+:/, "", str)
-    gsub(/\\\"/, "\"", str)
-    gsub(/"$/, "", str)
-    return substr(str, 2, length(str))
-  }
+  #[[ -z "$results" ]] && clean_exit 1
 
-  /Name":/        { printf "%s",    unstring($0) }
-  /Version":/     { printf "|%s",   unstring($0) }
-  /Description":/ { printf "|%s",   unstring($0) }
-  /URL":/         { printf "|%s",   unstring($0) }
-  /OutOfDate":/   { printf "|%s",   unstring($0) }
-  /URLPath":/     { printf "|%s\n", unstring($0) }
-  '
+  #while IFS='|' read -r Name Version Description URL OutOfDate URLPath; do
+    #[[ -z "$Name" ]] && continue
+    #[[ "$search_mode" = 'info' ]] && [[ "$Name" != "$term" ]] && continue
 
-  # parse JSON data
-  results="$(curl -fsS "${aur_srch}$(url_encode "$term")" | awk -F '[^\\\\]"' -v RS='{"|,"|"}' "$awkscript")"
+    ## FYI: http://old.nabble.com/echo-interrupted-by-SIGCHLD-from-a-dying-coprocess-td28028050.html
+    #case "$search_mode" in
+      #quiet)  echo "$Name" 2>/dev/null ;;
 
-  [[ -z "$results" ]] && clean_exit 1
+      #info)   [[ "$OutOfDate" =~ ^(1|OutOfDate)$ ]] && outofdate="${colorR}Yes${nocolor}" || outofdate='No'
+              #echo -e "${colorW}Repository \t: ${colorM}aur${nocolor}"              2>/dev/null
+              #echo -e "${colorW}Name \t\t: $Name${nocolor}"                         2>/dev/null
+              #echo -e "${colorW}Version \t: ${colorG}$Version${nocolor}"            2>/dev/null
+              #echo -e "${colorW}URL \t\t: ${colorC}${URL//\\\///}${nocolor}"        2>/dev/null
+              #echo -e "${colorW}Out of date \t: ${nocolor}$outofdate"               2>/dev/null
+              #echo -e "${colorW}Description \t: ${nocolor}${Description//\\\///}\n" 2>/dev/null ;;
 
-  while IFS='|' read -r Name Version Description URL OutOfDate URLPath; do
-    [[ -z "$Name" ]] && continue
-    [[ "$search_mode" = 'info' ]] && [[ "$Name" != "$term" ]] && continue
+      #search) [[ "$OutOfDate" =~ ^(1|OutOfDate)$ ]] && outofdate="${colorR}[out of date]${nocolor}" || outofdate=''
+              #echo -en "${colorM}aur/${colorW}$Name"  2>/dev/null
+              #echo -en " ${colorG}$Version${nocolor}" 2>/dev/null
+              #echo -e  " $outofdate"                  2>/dev/null
+              #echo -e  "    ${Description//\\\///}"   2>/dev/null ;;
 
-    # FYI: http://old.nabble.com/echo-interrupted-by-SIGCHLD-from-a-dying-coprocess-td28028050.html
-    case "$search_mode" in
-      quiet)  echo "$Name" 2>/dev/null ;;
-
-      info)   [[ "$OutOfDate" =~ ^(1|OutOfDate)$ ]] && outofdate="${colorR}Yes${nocolor}" || outofdate='No'
-              echo -e "${colorW}Repository \t: ${colorM}aur${nocolor}"              2>/dev/null
-              echo -e "${colorW}Name \t\t: $Name${nocolor}"                         2>/dev/null
-              echo -e "${colorW}Version \t: ${colorG}$Version${nocolor}"            2>/dev/null
-              echo -e "${colorW}URL \t\t: ${colorC}${URL//\\\///}${nocolor}"        2>/dev/null
-              echo -e "${colorW}Out of date \t: ${nocolor}$outofdate"               2>/dev/null
-              echo -e "${colorW}Description \t: ${nocolor}${Description//\\\///}\n" 2>/dev/null ;;
-
-      search) [[ "$OutOfDate" =~ ^(1|OutOfDate)$ ]] && outofdate="${colorR}[out of date]${nocolor}" || outofdate=''
-              echo -en "${colorM}aur/${colorW}$Name"  2>/dev/null
-              echo -en " ${colorG}$Version${nocolor}" 2>/dev/null
-              echo -e  " $outofdate"                  2>/dev/null
-              echo -e  "    ${Description//\\\///}"   2>/dev/null ;;
-
-      *)      errorout 'invalid search_mode'
-    esac
-  done < <(sort <<< "$results")
-}
-
-# dep_check {{{
-dep_check() {
-  echo 'resolving dependencies...'
-
-  local dep all_deps pac_deps
-  all_deps=(); aur_deps=(); pac_deps=(); mk_deps=()
-
-  while true; do
-    n=${#all_deps[@]}
-
-    for name in "${args[@]}" "${all_deps[@]}"; do
-      # keep args out of deps so error messages are more sane
-      if ! source_for_deps "$name"; then
-        # assume it's a pacman dep for now
-        grep -Fq -- " $name " <<< " ${args[@]} " || pac_deps+=("$name")
-      else
-        grep -Fq -- " $name " <<< " ${args[@]} " || aur_deps=("$name" "${aur_deps[@]}")
-
-        # filter satasfied deps, clear versioning
-        depends=($(pacman -T -- ${depends[@]} ${makedepends[@]}))
-        depends=("${depends[@]%>*}")
-        depends=("${depends[@]%=*}")
-        depends=("${depends[@]%<*}")
-
-        # store make depends for later removal
-        mk_deps+=("${makedepends[@]}")
-
-        # track unsatisfied deps
-        ((${#depends[@]} > 0)) && all_deps+=("${depends[@]}")
-      fi
-    done
-
-    # if we found no more deps this round, we can stop
-    ((${#all_deps[@]} == $n)) && break
-  done
-
-  if ((${#pac_deps[@]} > 0)); then
-    # check a list quickly for availability
-    while IFS=\' read -r _ dep _; do
-      # check only the error cases as a possible provides
-      pacman -Ssq -- "^$dep$" &>/dev/null || errorout "$dep: dependency cannot be met."
-    done < <(pacman -Si -- "${pac_deps[@]}" 2>&1 >/dev/null)
-
-    # sort and unique
-    pac_deps=($(sort -u <(printf '%s\n' "${pac_deps[@]}")))
-
-    echo; warn "the following (${#pac_deps[@]}) packages will be installed by pacman: ${pac_deps[@]}"; echo
-  fi
-}
-
+      #*)      errorout 'invalid search_mode'
+    #esac
+  #done < <(sort <<< "$results")
+#}
 # }}}
 
-# add_targets_to_list {{{
-add_targets_to_list() {
-  local name dep Name Version URLPath
+## dep_check {{{
+#dep_check() {
+  #echo 'resolving dependencies...'
 
-  # are we adding these to be installed --asdeps?
-  dep="$1"; shift
+  #local dep all_deps pac_deps
+  #all_deps=(); aur_deps=(); pac_deps=(); mk_deps=()
 
-  for name in "$@"; do
-    if grep -Fq -- " $name " <<< " $ignore_packages "; then
-      if ! prompt "$name is in ignore_packages. Install anyway"; then
-        warn "skipping target: $name"
-        continue
-      fi
-    fi
+  #while true; do
+    #n=${#all_deps[@]}
 
-    # fetch JSON
-    read -r Name Version URLPath < <(curl -s "${aur_info}$(url_encode "$name")" | sed -e '/.*"Name":"\([^"]*\)".*"Version":"\([^"]*\)".*"URLPath":"\([^"]*\)".*/!d; s//\1 \2 \3/g')
-    [[ -z "$Name" ]] && errorout "$name: package not found in AUR."
+    #for name in "${args[@]}" "${all_deps[@]}"; do
+      ## keep args out of deps so error messages are more sane
+      #if ! source_for_deps "$name"; then
+        ## assume it's a pacman dep for now
+        #grep -Fq -- " $name " <<< " ${args[@]} " || pac_deps+=("$name")
+      #else
+        #grep -Fq -- " $name " <<< " ${args[@]} " || aur_deps=("$name" "${aur_deps[@]}")
 
-    # is it already up to date?
-    grep -Fqx -- "$Name $Version" "$tmpdir/installed.lst" && warn "$Name-$Version is up to date -- reinstalling"
+        ## filter satasfied deps, clear versioning
+        #depends=($(pacman -T -- ${depends[@]} ${makedepends[@]}))
+        #depends=("${depends[@]%>*}")
+        #depends=("${depends[@]%=*}")
+        #depends=("${depends[@]%<*}")
 
-    # add non-dupes to list of targets
-    if ! grep -Fx -- " $Name " <<< " ${list_names[@]} "; then
-      list_names+=("$Name")
-      list_versions+=("$Version")
-      list_urls+=("$URLPath")
-      list_deps+=("$dep")
-    fi
-  done
-}
+        ## store make depends for later removal
+        #mk_deps+=("${makedepends[@]}")
 
-# }}}
+        ## track unsatisfied deps
+        #((${#depends[@]} > 0)) && all_deps+=("${depends[@]}")
+      #fi
+    #done
 
-# setup_targets {{{
-setup_targets() {
-  ((${#args[@]} == 0)) && errorout 'no targets specified (use -h for help)'
+    ## if we found no more deps this round, we can stop
+    #((${#all_deps[@]} == $n)) && break
+  #done
 
-  $resolve_dependencies && dep_check
+  #if ((${#pac_deps[@]} > 0)); then
+    ## check a list quickly for availability
+    #while IFS=\' read -r _ dep _; do
+      ## check only the error cases as a possible provides
+      #pacman -Ssq -- "^$dep$" &>/dev/null || errorout "$dep: dependency cannot be met."
+    #done < <(pacman -Si -- "${pac_deps[@]}" 2>&1 >/dev/null)
 
-  list_names=(); list_versions=(); list_urls=(); list_deps=()
-  pacman -Qm > "$tmpdir/installed.lst"
+    ## sort and unique
+    #pac_deps=($(sort -u <(printf '%s\n' "${pac_deps[@]}")))
 
-  echo 'searching AUR...'
-  add_targets_to_list 1 "${aur_deps[@]}"
-  add_targets_to_list 0 "${args[@]}"
+    #echo; warn "the following (${#pac_deps[@]}) packages will be installed by pacman: ${pac_deps[@]}"; echo
+  #fi
+#}
 
-  if ((${#list_names[@]} > 0)); then
-    echo -en "\n${colorY}Targets (${#list_names[@]}):${nocolor} "
+## }}}
 
-    for ((i=0; i<${#list_names[@]}; i++)); do
-      echo -n "${list_names[i]}-${list_versions[i]} "
-    done
+## add_targets_to_list {{{
+#add_targets_to_list() {
+  #local name dep Name Version URLPath
 
-    prompt "\n\nProceed with installation" || clean_exit
-    process_targets
-  else
-    errorout 'no targets specified (use -h for help)'
-  fi
-}
+  ## are we adding these to be installed --asdeps?
+  #dep="$1"; shift
 
-# }}}
+  #for name in "$@"; do
+    #if grep -Fq -- " $name " <<< " $ignore_packages "; then
+      #if ! prompt "$name is in ignore_packages. Install anyway"; then
+        #warn "skipping target: $name"
+        #continue
+      #fi
+    #fi
 
-# process_targets {{{
-process_targets() {
-  Name=
-  Version=
-  URLPath=
-  dep=
-  pkg=
+    ## fetch JSON
+    #read -r Name Version URLPath < <(curl -s "${aur_info}$(url_encode "$name")" | sed -e '/.*"Name":"\([^"]*\)".*"Version":"\([^"]*\)".*"URLPath":"\([^"]*\)".*/!d; s//\1 \2 \3/g')
+    #[[ -z "$Name" ]] && errorout "$name: package not found in AUR."
 
-  for ((i=0; i<${#list_names[@]}; i++)); do
-    Name="${list_names[i]}"
-    Version="${list_versions[i]}"
-    URLPath="${list_urls[i]}"
-    dep="${list_deps[i]}"
+    ## is it already up to date?
+    #grep -Fqx -- "$Name $Version" "$tmpdir/installed.lst" && warn "$Name-$Version is up to date -- reinstalling"
 
-    # check in the cache
-    pkg="$(find_pkg "$Name" "$Version")"
+    ## add non-dupes to list of targets
+    #if ! grep -Fx -- " $Name " <<< " ${list_names[@]} "; then
+      #list_names+=("$Name")
+      #list_versions+=("$Version")
+      #list_urls+=("$URLPath")
+      #list_deps+=("$dep")
+    #fi
+  #done
+#}
 
-    if ! $rebuild && [[ -n "$pkg" ]] && [[ "$sync_mode" = 'install' ]] && ! is_devel "$pkg"; then
-      # use cached package
-      display "Installing cached $pkg..."
-    else
-      # download from aur, sets $pkg variable
-      download_tarball "$Name" "$URLPath"
-      build_package "$dep" || continue
-    fi
+## }}}
 
-    install_package "$pkg" "$dep"
-  done
+## setup_targets {{{
+#setup_targets() {
+  #((${#args[@]} == 0)) && errorout 'no targets specified (use -h for help)'
 
-  # remove make depends
-  if $remove_makedepends && ((${#mk_deps[@]} > 0)); then
-    display 'Removing make depends...'
-    for mk_dep in ${mk_deps[@]}; do
-      pacman --noconfirm -R $mk_dep || warn "unable to remove makedepend $mk_dep"
-    done
-  fi
-}
+  #$resolve_dependencies && dep_check
 
-# }}}
+  #list_names=(); list_versions=(); list_urls=(); list_deps=()
+  #pacman -Qm > "$tmpdir/installed.lst"
 
-# }}}
+  #echo 'searching AUR...'
+  #add_targets_to_list 1 "${aur_deps[@]}"
+  #add_targets_to_list 0 "${args[@]}"
+
+  #if ((${#list_names[@]} > 0)); then
+    #echo -en "\n${colorY}Targets (${#list_names[@]}):${nocolor} "
+
+    #for ((i=0; i<${#list_names[@]}; i++)); do
+      #echo -n "${list_names[i]}-${list_versions[i]} "
+    #done
+
+    #prompt "\n\nProceed with installation" || clean_exit
+    #process_targets
+  #else
+    #errorout 'no targets specified (use -h for help)'
+  #fi
+#}
+
+## }}}
+
+## process_targets {{{
+#process_targets() {
+  #Name=
+  #Version=
+  #URLPath=
+  #dep=
+  #pkg=
+
+  #for ((i=0; i<${#list_names[@]}; i++)); do
+    #Name="${list_names[i]}"
+    #Version="${list_versions[i]}"
+    #URLPath="${list_urls[i]}"
+    #dep="${list_deps[i]}"
+
+    ## check in the cache
+    #pkg="$(find_pkg "$Name" "$Version")"
+
+    #if ! $rebuild && [[ -n "$pkg" ]] && [[ "$sync_mode" = 'install' ]] && ! is_devel "$pkg"; then
+      ## use cached package
+      #display "Installing cached $pkg..."
+    #else
+      ## download from aur, sets $pkg variable
+      #download_tarball "$Name" "$URLPath"
+      #build_package "$dep" || continue
+    #fi
+
+    #install_package "$pkg" "$dep"
+  #done
+
+  ## remove make depends
+  #if $remove_makedepends && ((${#mk_deps[@]} > 0)); then
+    #display 'Removing make depends...'
+    #for mk_dep in ${mk_deps[@]}; do
+      #pacman --noconfirm -R $mk_dep || warn "unable to remove makedepend $mk_dep"
+    #done
+  #fi
+#}
+
+## }}}
 
 aur='https://aur.archlinux.org'
 aur_srch="$aur/rpc.php?type=search&arg="
